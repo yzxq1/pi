@@ -10,6 +10,8 @@ import {
 	Spacer,
 	Text,
 	truncateToWidth,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
@@ -299,6 +301,7 @@ class SessionList implements Component, Focusable {
 	public onRenameSession?: (sessionPath: string) => void;
 	public onError?: (message: string) => void;
 	private maxVisible: number = 10; // Max sessions visible (one line each)
+	private mousePressedIndex?: number;
 
 	// Focusable implementation - propagate to searchInput for IME cursor positioning
 	private _focused = false;
@@ -412,6 +415,10 @@ class SessionList implements Component, Focusable {
 	render(width: number): string[] {
 		const lines: string[] = [];
 
+		// Adapt visible rows to terminal height
+		const terminalRows = process.stdout.rows || 24;
+		this.maxVisible = Math.max(8, terminalRows - 13);
+
 		// Render search input
 		lines.push(...this.searchInput.render(width));
 		lines.push(""); // Blank line after search
@@ -515,6 +522,50 @@ class SessionList implements Component, Focusable {
 		}
 
 		return lines;
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.filteredSessions.length === 0) return undefined;
+
+		if (event.type === "wheel" && event.wheelDelta) {
+			const delta = event.wheelDelta < 0 ? -1 : 1;
+			const previousIndex = this.selectedIndex;
+			this.selectedIndex = Math.max(0, Math.min(this.filteredSessions.length - 1, this.selectedIndex + delta));
+			return { handled: true, render: this.selectedIndex !== previousIndex };
+		}
+
+		if (event.button !== "left" || (event.type !== "press" && event.type !== "click")) {
+			return undefined;
+		}
+
+		const startIndex = Math.max(
+			0,
+			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filteredSessions.length - this.maxVisible),
+		);
+		const endIndex = Math.min(startIndex + this.maxVisible, this.filteredSessions.length);
+		const itemIndex = startIndex + (event.y - 2);
+
+		if (itemIndex < startIndex || itemIndex >= endIndex) return undefined;
+
+		if (event.type === "press") {
+			this.mousePressedIndex = itemIndex;
+			const changed = this.selectedIndex !== itemIndex;
+			this.selectedIndex = itemIndex;
+			return { handled: true, focus: true, render: changed };
+		}
+
+		if (event.type === "click") {
+			const clickedIndex = this.mousePressedIndex ?? itemIndex;
+			this.mousePressedIndex = undefined;
+			this.selectedIndex = clickedIndex;
+			const selected = this.filteredSessions[this.selectedIndex];
+			if (selected && this.onSelect) {
+				this.onSelect(selected.session.path);
+			}
+			return { handled: true };
+		}
+
+		return undefined;
 	}
 
 	private buildTreePrefix(node: FlatSessionNode): string {
@@ -682,6 +733,17 @@ async function deleteSessionFile(
  * Component that renders a session selector
  */
 export class SessionSelectorComponent extends Container implements Focusable {
+	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
+		if (this.mode === "rename") return undefined;
+		const headerHeight = 7;
+		const localY = event.y - headerHeight;
+		const result = this.sessionList.handleMouse({ ...event, y: localY });
+		if (result) {
+			this.requestRender();
+		}
+		return result;
+	}
+
 	get capturesViewportInput(): boolean {
 		return this.mode !== "rename";
 	}
